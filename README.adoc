@@ -1,0 +1,421 @@
+= OpenOCD Image
+Jordan Williams <jordan@jwillikers.com>
+:experimental:
+:icons: font
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+:Buildah: https://buildah.io/[Buildah]
+:Fedora: https://getfedora.org/[Fedora]
+:Fedora-Silverblue: https://silverblue.fedoraproject.org/[Fedora Silverblue]
+:fish: https://fishshell.com/[fish]
+:GDB: https://www.gnu.org/software/gdb/[GDB]
+:Git: https://git-scm.com/[Git]
+:pre-commit: https://pre-commit.com/[pre-commit]
+:Podman: https://podman.io/[Podman]
+:SELinux: https://github.com/SELinuxProject/selinux[SELinux]
+:ST-LINK: https://www.st.com/en/development-tools/st-link-v2.html[ST-LINK]
+:udev: https://www.freedesktop.org/software/systemd/man/udev.html[udev]
+
+image:https://img.shields.io/github/workflow/status/jwillikers/openocd-image/CI/main[GitHub Workflow Status]
+image:https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white[pre-commit, link=https://github.com/pre-commit/pre-commit]
+
+A container image for {OpenOCD}.
+
+== Synopsis
+
+Image:: https://quay.io/repository/jwillikers/openocd[quay.io/jwillikers/openocd]
+
+Tags::
+* `latest`
+
+Supported architectures::
+* `amd64` _(x86_64)_
+* `arm` _(armhfp)_
+* `arm64` _(aarch64)_
+
+User:: The default user inside the container is named `user`.
+
+Entrypoint:: `openocd`
+
+Labels::
+`io.containers.autoupdate=registry`::: Enables automatic updates when using {Podman} and the _fully-qualified_ image name.
+
+== Usage
+
+The following instructions and examples will you get you up and running for using OpenOCD and {GDB} with your on-chip debugger.
+For these examples, I'm using an {ST-LINK}, an ST-LINK/V2.1 to be exact, and targeting an STM32F7 microcontroller.
+All examples and instructions are for rootless containers run with {Podman}.
+
+=== USB Device Access
+
+When running OpenOCD from within this container, make sure to provide the appropriate access to the on-chip debugger.
+To run the container with as few privileges as possible, permit the user access to the on-chip debugger device and pass only this device to container.
+
+==== udev
+
+To allow access to the on-chip debugger, a {udev} rule can be created on the host which permits access for unprivileged users.
+This will allow an unprivileged container to access the device.
+
+. Connect the on-chip debugger to the host.
+
+. Use `lsusb` or `dmesg` to determine the vendor id and product id of the on-chip debugger.
++
+--
+[source,sh]
+----
+$ lsusb | grep ST-LINK
+Bus 001 Device 020: ID 0483:374b STMicroelectronics ST-LINK/V2.1
+----
+
+Here the vendor id is `0483` and the product id is `374b`.
+--
+
+. Create an appropriately named udev rule to permit access, substituting the vendor id and product id from the last step.
++
+./etc/udev/rules.d/70-st-link.rules
+[source,udev]
+----
+# ST-LINK/V2-1
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", TAG+="uaccess"
+----
+
+. Now reload the udev rules.
++
+[source,sh]
+----
+sudo udevadm control --reload-rules
+----
+
+This udev rule grant's access to the user on the host machine.
+It's important to run rootless containers which run with a non-root user, such as this one, with the option `--userns keep-id`.
+This ensures that the udev rule is applied to the user running inside the container.
+
+==== Find the USB Bus and Device Numbers
+
+It's possible to permit access to the underlying device with by allowing the container to access `/dev/bus/usb`, but this allows the container access to all USB devices.
+To restrict this further, it's necessary to find the device path for the on-chip debugger as shown below.
+
+Use `lsusb` to determine the USB bus and device numbers assigned to the on-chip debugger.
+
+[source,sh]
+----
+$ lsusb | grep ST-LINK
+Bus 001 Device 020: ID 0483:374b STMicroelectronics ST-LINK/V2.1
+----
+
+The USB bus number here is `001`, and the device number is `020`.
+Using this information, the USB device's path is `/dev/bus/usb/001/020`.
+Pass this device in to the container using the `--device` option like so, `--device /dev/bus/usb/001/020`.
+
+==== SELinux
+
+For systems using {SELinux}, such as {Fedora}, there is the last hurdle.
+To enable access to USB devices for rootless containers on systems running SELinux, pass the option `--security-opt label=disable` to Podman.
+
+=== Examples
+
+The following examples assume you have allowed the necessary access to the USB devices.
+In addition, they use the same device information such as the USB bus and device numbers.
+The examples will enumerate a number of common scenarios when networking between {GDB} and OpenOCD.
+To attach the GDB Server hosted by OpenOCD, you'll need to permit network access to port `3333` of the OpenOCD container.
+Some of the examples run GDB from within its own container.
+These use my https://github.com/jwillikers/gdb-image/[GDB Image] available on https://quay.io[Quay].
+
+==== Flash
+
+The following example flashes an ELF file executable in the current directory to an STM32F7 target board.
+
+[source,sh]
+----
+podman run \
+    --rm \
+    --userns keep-id \
+    --security-opt label=disable \
+    --device /dev/bus/usb/001/020 \
+    --volume $PWD:/home/user:Z \
+    --name openocd \
+    -it quay.io/jwillikers/openocd:latest \
+    -f interface/stlink.cfg \
+    -f target/stm32f7x.cfg \
+    -c "program app.elf verify reset exit"
+----
+
+==== Background
+
+To run OpenOCD in the background, daemonize the container by using the `-d` flag in place of the `-i` flag used in the preceding example.
+
+[source,sh]
+----
+podman run \
+    --rm \
+    --userns keep-id \
+    --security-opt label=disable \
+    --device /dev/bus/usb/001/020 \
+    --name openocd \
+    -dt quay.io/jwillikers/openocd:latest \
+    -f interface/stlink.cfg \
+    -f target/stm32f7x.cfg
+----
+
+==== GDB From the Same Pod
+
+If you wish to run GDB from another container, the easiest method is to place both rootless containers in the same pod and attach to port `3333` on `localhost`.
+
+. Create a pod.
++
+[source,sh]
+----
+podman pod create --name openocd-and-gdb
+----
+
+. Create and start the OpenOCD container as part of the new pod.
++
+[source,sh]
+----
+podman run \
+    --rm \
+    --pod openocd-and-gdb \
+    --userns keep-id \
+    --security-opt label=disable \
+    --device /dev/bus/usb/001/020 \
+    --name openocd \
+    -dt quay.io/jwillikers/openocd:latest \
+    -f interface/stlink.cfg -f target/stm32f7x.cfg
+----
+
+. Run GDB from a container within the same pod.
++
+[source,sh]
+----
+podman run \
+    --rm \
+    --pod openocd-and-gdb \
+    --volume $PWD:/home/user:Z \
+    --name gdb \
+    -it quay.io/jwillikers/gdb:latest \
+    -q -ex "target remote :3333" app.elf
+----
+
+==== GDB From Another Pod
+
+For rootless containers using the default networking stack, `slirp4netns`, and which are not within the same pod, use the IP address of the network interface on the host when connecting to the GDB Server.
+
+. Create and start the OpenOCD container, forwarding port `3333`.
++
+--
+CAUTION: This exposes the port on your host machine, so use with caution.
+
+[source,sh]
+----
+podman run \
+    --rm \
+    --userns keep-id \
+    --security-opt label=disable \
+    --device /dev/bus/usb/001/020 \
+    -p 3333:3333 \
+    --name openocd \
+    -dt quay.io/jwillikers/openocd:latest \
+    -f interface/stlink.cfg -f target/stm32f7x.cfg
+----
+--
+
+. Determine the IP address of your network interface.
++
+[source,sh]
+----
+$ ip address show eth0
+3: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group
+default qlen 1000
+link/ether 3c:e1:a1:c1:7a:3f brd ff:ff:ff:ff:ff:ff
+altname eth0
+inet 192.168.99.109/24 brd 192.168.99.255 scope global dynamic noprefixroute eth0
+valid_lft 78808sec preferred_lft 78808sec
+inet6 fe80::5632:6f10:9e76:c33/64 scope link noprefixroute
+valid_lft forever preferred_lft forever
+----
+
+. Run GDB from another container.
++
+[source,sh]
+----
+podman run \
+    --rm \
+    --volume $PWD:/home/user:Z \
+    --name gdb \
+    -it quay.io/jwillikers/gdb:latest \
+    -q -ex "target remote 192.168.99.109:3333" app.elf
+----
+
+// todo CNI Bridge networking?
+// ==== GDB Over a CNI Network
+
+// . Create a rootless network.
+// +
+// --
+// [source,sh]
+// ----
+// $ podman network create
+// /var/home/jordan/.config/cni/net.d/cni-podman0.conflist
+// ----
+
+// In this example, the created network is named `cni-podman0`.
+// --
+
+// [source,sh]
+// ----
+// podman run \
+//     --rm \
+//     --userns keep-id \
+//     --security-opt label=disable \
+//     --device /dev/bus/usb/001/020 \
+//     --network cni-podman0 \
+//     --name openocd \
+//     -dt quay.io/jwillikers/openocd:latest \
+//     -f interface/stlink.cfg -f target/stm32f7x.cfg
+// ----
+
+// [source,sh]
+// ----
+// podman run \
+//     --rm \
+//     --pod openocd-and-gdb \
+//     --volume $PWD:/home/user:Z \
+//     --network cni-podman0 \
+//     --name gdb \
+//     -it quay.io/jwillikers/gdb:latest \
+//     -q -ex "target remote 10.88.2.2:3333"
+// ----
+
+==== GDB on the Host
+
+If you're using GDB on the host, then it's possible to access the GDB Server using the host's network.
+
+. Startup OpenOCD in a container using the host's network stack directly.
++
+[source,sh]
+----
+podman run \
+    --rm \
+    --userns keep-id \
+    --security-opt label=disable \
+    --device /dev/bus/usb/001/020 \
+    --network host \
+    --name openocd \
+    -dt quay.io/jwillikers/openocd:latest \
+    -f interface/stlink.cfg -f target/stm32f7x.cfg
+----
+
+. Then just attach to the GDB Server as normal.
++
+[source,sh]
+----
+gdb -q -ex "target remote :3333" app.elf
+----
+
+== Build
+
+This project uses {Buildah} and {Podman} for building and testing the image.
+A set of {pre-commit} checks are readily available to ensure your code is up-to-spec at the time it is committed.
+Instructions for setting up a development environment, building the image, and testing the image follow.
+These instructions are intended for users of {Fedora-Silverblue}, where the packages `buildah`, `git`, and `podman` are already available.
+Moreover, I use the {fish} shell.
+
+. Install the {fish} shell.
++
+[source,sh]
+----
+sudo rpm-ostree install fish
+----
+
+. Reboot to finish the installation.
++
+[source,sh]
+----
+systemctl reboot
+----
+
+. Clone this repository.
++
+[source,sh]
+----
+git -C ~/Projects clone git@github.com:jwillikers/openocd-image.git
+----
+
+. Install {pre-commit}.
++
+[source,sh]
+----
+pip install pre-commit
+----
+
+. Change into the project directory.
++
+[source,sh]
+----
+cd ~/Projects/openocd-image
+----
+
+. Install pre-commit's Git hooks.
++
+[source,sh]
+----
+pre-commit install
+----
+
+. Run the shell script to build the image.
++
+[source,sh]
+----
+buildah unshare ~/Projects/openocd-image/build.fish
+----
+
+. Test the image with the `test.fish` shell script.
++
+[source,sh]
+----
+~/Projects/openocd-image/test.fish
+----
+
+== Contributing
+
+Contributions in the form of issues, feedback, and even pull requests are welcome.
+Make sure to adhere to the project's link:CODE_OF_CONDUCT.adoc[Code of Conduct].
+
+== Open Source Software
+
+This project is built on the hard work of countless open source contributors.
+Several of these projects are enumerated below.
+
+* https://asciidoctor.org/[Asciidoctor]
+* {Buildah}
+* {Fedora}
+* {Fedora-Silverblue}
+* {fish}
+* {GDB}
+* {Git}
+* https://www.linuxfoundation.org/[Linux]
+* {OpenOCD}
+* {Podman}
+* {pre-commit}
+* https://www.python.org/[Python]
+* https://rouge.jneen.net/[Rouge]
+* https://www.ruby-lang.org/en/[Ruby]
+
+== Code of Conduct
+
+Refer to the project's link:CODE_OF_CONDUCT.adoc[Code of Conduct] for details.
+
+== License
+
+This repository is licensed under the https://www.gnu.org/licenses/gpl-3.0.html[GPLv3], a copy of which is provided in the link:LICENSE.adoc[license file].
+
+© 2021 Jordan Williams
+
+== Authors
+
+mailto:{email}[{author}]
