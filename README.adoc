@@ -15,8 +15,8 @@ endif::[]
 :fish: https://fishshell.com/[fish]
 :GDB: https://www.gnu.org/software/gdb/[GDB]
 :Git: https://git-scm.com/[Git]
-:pre-commit: https://pre-commit.com/[pre-commit]
 :Podman: https://podman.io/[Podman]
+:pre-commit: https://pre-commit.com/[pre-commit]
 :SELinux: https://github.com/SELinuxProject/selinux[SELinux]
 :ST-LINK: https://www.st.com/en/development-tools/st-link-v2.html[ST-LINK]
 :udev: https://www.freedesktop.org/software/systemd/man/udev.html[udev]
@@ -35,7 +35,6 @@ Tags::
 
 Supported architectures::
 * `amd64` _(x86_64)_
-* `arm` _(armhfp)_
 * `arm64` _(aarch64)_
 
 User:: The default user inside the container is named `user`.
